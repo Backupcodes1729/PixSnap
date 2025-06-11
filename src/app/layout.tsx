@@ -1,10 +1,12 @@
+
 import type {Metadata} from 'next';
 import './globals.css';
 import { Toaster } from "@/components/ui/toaster"
 
 export const metadata: Metadata = {
-  title: 'PixSnap',
-  description: 'Capture and download images with custom dimensions, resolution, and format.',
+  title: 'PixSnap - Online Image Capture Tool',
+  description: 'Capture and download images with custom dimensions, resolution, format, and target file size. Easy to use webcam image snapper.',
+  viewport: 'width=device-width, initial-scale=1',
 };
 
 export default function RootLayout({
@@ -26,3 +28,5 @@ export default function RootLayout({
     </html>
   );
 }
+
+    
