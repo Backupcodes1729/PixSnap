@@ -34,14 +34,13 @@ export default function PreviewCapturePage() {
   const [webcamError, setWebcamError] = useState<string | null>(null);
   
   const [isLoadingSettings, setIsLoadingSettings] = useState<boolean>(true);
-  const [isLoadingCamera, setIsLoadingCamera] = useState<boolean>(false);
+  const [isLoadingCamera, setIsLoadingCamera] = useState<boolean>(true); // Start true
   const [isCapturingPhoto, setIsCapturingPhoto] = useState<boolean>(false);
   const [isPreviewing, setIsPreviewing] = useState<boolean>(false);
 
   const [availableCameras, setAvailableCameras] = useState<MediaDeviceInfo[]>([]);
   const [currentCameraIndex, setCurrentCameraIndex] = useState<number>(0);
 
-  // Load settings from URL parameters
   useEffect(() => {
     setIsLoadingSettings(true);
     try {
@@ -87,7 +86,7 @@ export default function PreviewCapturePage() {
 
     setIsLoadingCamera(true);
     setWebcamError(null);
-    setHasCameraPermission(null);
+    setHasCameraPermission(null); 
     setIsPreviewing(false); 
     setImageDataUrl(null);
 
@@ -129,19 +128,27 @@ export default function PreviewCapturePage() {
 
       if (videoRef.current) {
         videoRef.current.srcObject = newMediaStream;
-        videoRef.current.onloadedmetadata = () => setIsLoadingCamera(false);
+        setIsLoadingCamera(false); // Set loading false once stream object is assigned
+
+        videoRef.current.onloadedmetadata = () => {
+           // console.log("Video metadata loaded");
+           // Can be used for other checks if needed, like video dimensions
+        };
         videoRef.current.onerror = () => {
-            setWebcamError('Error with video stream.');
-            setIsLoadingCamera(false);
+            console.error('Video element error');
+            setWebcamError('Error with video stream playback.');
+            if (isLoadingCamera) setIsLoadingCamera(false);
             setHasCameraPermission(false);
-            newMediaStream.getTracks().forEach(track => track.stop());
-             if (videoRef.current && videoRef.current.srcObject === newMediaStream) {
+            if (activeStream) {
+                activeStream.getTracks().forEach(track => track.stop());
+            }
+            if (videoRef.current && videoRef.current.srcObject === activeStream) {
                   videoRef.current.srcObject = null;
-              }
-            setStream(s => s === newMediaStream ? null : s);
+            }
+            setStream(s => s === activeStream ? null : s);
         };
       } else {
-        setIsLoadingCamera(false);
+        setIsLoadingCamera(false); // Fallback if ref is not available
       }
     } catch (err: any) {
       console.error("Error accessing webcam:", err);
@@ -154,7 +161,7 @@ export default function PreviewCapturePage() {
       setIsLoadingCamera(false);
       setStream(null);
     }
-  }, [settings, currentCameraIndex]); 
+  }, [settings, currentCameraIndex]); // Removed toast from deps, it should be stable
 
   useEffect(() => {
     if (!isLoadingSettings && settings && !isPreviewing) { 
@@ -172,7 +179,7 @@ export default function PreviewCapturePage() {
       }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isLoadingSettings, settings, currentCameraIndex, initializeCamera]); // Added initializeCamera to dependencies
+  }, [isLoadingSettings, settings, initializeCamera]); // initializeCamera handles currentCameraIndex internally
 
   const getEstimatedByteSize = (dataUri: string): number => {
     if (!dataUri.includes(',')) return 0;
@@ -230,28 +237,25 @@ export default function PreviewCapturePage() {
       const minQuality = 0.1;
       const qualityStep = 0.05;
       let attempts = 0;
-      const maxAttempts = Math.ceil((currentQuality - minQuality) / qualityStep) + 5; // Max attempts to find suitable quality
+      const maxAttempts = Math.ceil((currentQuality - minQuality) / qualityStep) + 5; 
       let currentSize = getEstimatedByteSize(tempImageUrl);
 
-      // Iteratively reduce quality to meet target size
       while (currentSize > targetSizeBytes && currentQuality > minQuality && attempts < maxAttempts) {
         currentQuality -= qualityStep;
-        if (currentQuality < minQuality) currentQuality = minQuality; // Ensure quality doesn't go below min
+        if (currentQuality < minQuality) currentQuality = minQuality; 
         
         const nextImgUrl = canvas.toDataURL(imageMimeType, currentQuality);
         const nextSize = getEstimatedByteSize(nextImgUrl);
 
-        // Prefer smaller size if still above target, or if it's the first valid size below target
         if (nextSize < currentSize || (nextSize > currentSize && currentSize > targetSizeBytes) ) {
              tempImageUrl = nextImgUrl;
              currentSize = nextSize;
              finalQuality = currentQuality;
         } else if (nextSize > currentSize && currentSize <= targetSizeBytes) {
-            // If current size is already below target, and next size is larger, stick with current
             break;
         }
         attempts++;
-        if (currentQuality <= minQuality && currentSize > targetSizeBytes) break; // Stop if min quality reached and still too large
+        if (currentQuality <= minQuality && currentSize > targetSizeBytes) break; 
       }
       if (currentSize > targetSizeBytes) {
         toast({ title: 'File Size Warning', description: `Could not meet target ${settings.targetFileSizeKB} KB. Actual: ${(currentSize / 1024).toFixed(1)} KB at quality ${(finalQuality!*100).toFixed(0)}%.`, duration: 5000 });
@@ -299,26 +303,38 @@ export default function PreviewCapturePage() {
   const handleRetake = () => {
     setIsPreviewing(false);
     setImageDataUrl(null);
+    // setCurrentCameraIndex(prev => prev); // This line might be redundant if initializeCamera is called directly
     if (settings) { 
-        initializeCamera();
+        initializeCamera(); // Re-initialize camera with current settings (and currentCameraIndex)
     }
   };
 
   const handleSwitchCamera = () => {
     if (availableCameras.length > 1) {
       setCurrentCameraIndex((prevIndex) => (prevIndex + 1) % availableCameras.length);
-      // The useEffect listening to currentCameraIndex will re-initialize the camera
+      // initializeCamera will be called by the useEffect that depends on currentCameraIndex via initializeCamera's deps
     }
   };
 
   const handleClose = () => {
-    // Try to close the window. If it fails (e.g., not opened by script), inform user.
     if (window.opener) {
       window.close();
     } else {
-      toast({ title: 'Cannot Close Window', description: 'This window was not opened by a script and cannot be closed automatically.', variant: 'default' });
+      // Fallback for windows not opened by script, e.g. direct navigation
+      window.location.assign('/'); // Or some other appropriate fallback
+      toast({ title: 'Closing Window', description: 'Attempting to close. If this fails, please close the tab manually.', variant: 'default' });
     }
   };
+  
+  useEffect(() => {
+    // This effect now specifically re-initializes camera when currentCameraIndex changes
+    // and settings are loaded and not previewing.
+    if (!isLoadingSettings && settings && !isPreviewing) {
+      initializeCamera();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentCameraIndex]); // Removed initializeCamera from here to avoid potential loops, initializeCamera deps handle settings
+
 
   if (isLoadingSettings) {
     return (
@@ -343,15 +359,15 @@ export default function PreviewCapturePage() {
   const videoAspectRatio = settings.width > 0 && settings.height > 0 ? settings.width / settings.height : 16/9;
 
   return (
-    <div className="flex flex-col items-stretch justify-between min-h-screen bg-black text-white">
-      <div className="absolute top-2 right-2 md:top-4 md:right-4 z-20">
+    <div className="flex flex-col items-stretch justify-between min-h-screen bg-black text-white overflow-hidden">
+      <div className="absolute top-2 right-2 md:top-4 md:right-4 z-50">
         <Button onClick={handleClose} variant="ghost" size="icon" className="text-white hover:bg-white/20 rounded-full p-2">
           <XCircle size={28} />
           <span className="sr-only">Close Preview</span>
         </Button>
       </div>
 
-      <div className="flex-grow flex items-center justify-center p-4 overflow-hidden relative">
+      <div className="flex-grow flex items-center justify-center p-0 md:p-4 overflow-hidden relative">
         {!isPreviewing && (
           <div 
             className="w-full h-full max-w-full max-h-full bg-black flex items-center justify-center relative"
@@ -363,16 +379,17 @@ export default function PreviewCapturePage() {
               playsInline 
               muted 
               className={cn(
-                "object-contain w-full h-full rounded-lg shadow-2xl",
-                { 'opacity-0': isLoadingCamera || isCapturingPhoto || webcamError || !stream || hasCameraPermission !== true }
+                "object-contain w-full h-full rounded-none md:rounded-lg shadow-2xl",
+                { 'opacity-100': stream && hasCameraPermission && !isLoadingCamera && !webcamError },
+                { 'opacity-0': isLoadingCamera || webcamError || !stream || hasCameraPermission !== true }
               )}
             />
             <canvas ref={canvasRef} className="hidden"></canvas>
             
-            {(isLoadingCamera || isCapturingPhoto) && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center text-white bg-black/70 z-10">
+            {(isLoadingCamera || (isCapturingPhoto && !webcamError)) && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center text-white bg-black/80 z-10">
                   <Loader2 size={48} className="animate-spin mb-2"/>
-                  <p>{isCapturingPhoto ? 'Processing Image...' : (availableCameras.length > 0 && stream && currentCameraIndex >= 0 && !webcamError ? 'Switching camera...' : 'Initializing Webcam...')}</p>
+                  <p>{isCapturingPhoto ? 'Processing Image...' : 'Initializing Webcam...'}</p>
               </div>
             )}
 
@@ -381,7 +398,7 @@ export default function PreviewCapturePage() {
                 <VideoOff size={48} className="mb-2"/>
                 <p className="font-semibold">Webcam Error</p>
                 <p className="text-sm">{webcamError || "Camera access denied or unavailable."}</p>
-                 {hasCameraPermission === false && !webcamError?.includes("denied") && ( // Only show if error is not already about denial
+                 {hasCameraPermission === false && !webcamError?.includes("denied") && ( 
                     <Alert variant="destructive" className="mt-4 max-w-md bg-destructive/20 border-destructive/50 text-destructive-foreground">
                         <AlertTitle>Camera Access Problem</AlertTitle>
                         <AlertDescription>
@@ -407,48 +424,72 @@ export default function PreviewCapturePage() {
               alt="Captured preview"
               width={settings.width}
               height={settings.height}
-              className="object-contain rounded-lg shadow-2xl"
-              style={{maxWidth: '100%', maxHeight: 'calc(100vh - 100px)'}} // Ensure it fits within viewport minus controls
+              className="object-contain rounded-none md:rounded-lg shadow-2xl"
+              style={{maxWidth: '100%', maxHeight: 'calc(100vh - 0px)'}} 
               data-ai-hint="user capture preview"
-              priority // Load the captured image quickly
+              priority 
             />
         )}
       </div>
 
-      <div className="bg-black/70 p-3 md:p-4 flex justify-center items-center gap-3 md:gap-4 backdrop-blur-sm border-t border-white/20">
-        {!isPreviewing && (
-          <>
-            <Button 
-              onClick={handleCapture} 
-              disabled={!stream || !hasCameraPermission || isLoadingCamera || isCapturingPhoto || !!webcamError} 
-              className="text-base md:text-lg px-4 md:px-6 py-2 md:py-3 bg-accent hover:bg-accent/90 text-accent-foreground rounded-lg flex-1 max-w-xs"
-            >
-              {isCapturingPhoto ? <Loader2 className="mr-2 h-5 w-5 animate-spin" /> : <CameraIcon className="mr-2 h-5 w-5" />}
-              Capture
-            </Button>
-            {availableCameras.length > 1 && (
+      {/* Floating Action Buttons Container */}
+      <div className="absolute bottom-6 md:bottom-10 inset-x-0 z-40 flex items-center justify-center px-4">
+        <div className="relative flex items-center justify-center bg-black/50 backdrop-blur-md p-2 md:p-3 rounded-2xl shadow-xl space-x-2 md:space-x-3">
+          {!isPreviewing && stream && hasCameraPermission === true && !webcamError && !isLoadingCamera && (
+            <>
+              {availableCameras.length > 1 && (
+                <Button
+                  onClick={handleSwitchCamera}
+                  variant="ghost"
+                  size="icon" 
+                  className="text-white hover:bg-white/20 w-12 h-12 md:w-14 md:h-14"
+                  disabled={isCapturingPhoto}
+                  aria-label="Switch Camera"
+                >
+                  <SwitchCamera size={22} />
+                </Button>
+              )}
+
               <Button
-                onClick={handleSwitchCamera}
-                variant="outline"
-                disabled={isLoadingCamera || isCapturingPhoto || !hasCameraPermission || !!webcamError} 
-                className="text-base md:text-lg px-4 md:px-6 py-2 md:py-3 bg-white/10 hover:bg-white/20 border-white/30 text-white rounded-lg"
+                onClick={handleCapture}
+                variant="default"
+                size="icon" 
+                className="bg-accent hover:bg-accent/90 text-accent-foreground rounded-full w-16 h-16 md:w-20 md:h-20 p-0 flex items-center justify-center shadow-lg"
+                disabled={isCapturingPhoto}
+                aria-label="Capture Photo"
               >
-                <SwitchCamera className="mr-2 h-5 w-5" /> Switch
+                {isCapturingPhoto ? (
+                  <Loader2 className="h-7 w-7 md:h-8 md:h-8 animate-spin" />
+                ) : (
+                  <CameraIcon className="h-7 w-7 md:h-8 md:h-8" />
+                )}
               </Button>
-            )}
-          </>
-        )}
-        {isPreviewing && (
-          <>
-            <Button onClick={handleRetake} variant="outline" className="text-base md:text-lg px-4 md:px-6 py-2 md:py-3 bg-white/10 hover:bg-white/20 border-white/30 text-white rounded-lg">
-              <RefreshCw className="mr-2 h-5 w-5" /> Retake
-            </Button>
-            <Button onClick={handleDownload} className="text-base md:text-lg px-4 md:px-6 py-2 md:py-3 bg-accent hover:bg-accent/90 text-accent-foreground rounded-lg">
-              <Download className="mr-2 h-5 w-5" /> Download
-            </Button>
-          </>
-        )}
+              
+              {availableCameras.length > 1 && ( /* Invisible spacer for symmetry if switch camera is present */
+                <div className="w-12 h-12 md:w-14 md:h-14 flex-shrink-0"></div>
+              )}
+               {availableCameras.length <= 1 && ( /* Spacers if capture is only button to center it more effectively */
+                <>
+                 <div className="w-12 h-12 md:w-14 md:h-14 flex-shrink-0 opacity-0 pointer-events-none"></div>
+                 <div className="w-12 h-12 md:w-14 md:h-14 flex-shrink-0 opacity-0 pointer-events-none"></div>
+                </>
+              )}
+            </>
+          )}
+
+          {isPreviewing && imageDataUrl && (
+            <>
+              <Button onClick={handleRetake} variant="outline" className="text-sm md:text-base px-4 py-2 bg-white/20 hover:bg-white/30 border-white/40 text-white rounded-full">
+                <RefreshCw className="mr-2 h-4 w-4" /> Retake
+              </Button>
+              <Button onClick={handleDownload} className="text-base md:text-base px-4 py-2 bg-accent hover:bg-accent/90 text-accent-foreground rounded-full">
+                <Download className="mr-2 h-5 w-5" /> Download
+              </Button>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );
 }
+    
