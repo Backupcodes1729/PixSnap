@@ -19,11 +19,16 @@ import { useToast } from '@/hooks/use-toast';
 import { Camera, Download, Settings2, Image as ImageIcon, VideoOff, Loader2, SwitchCamera } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-const RESOLUTION_PRESETS: Record<string, { width: number; height: number }> = {
-  low: { width: 640, height: 480 },
-  medium: { width: 1280, height: 720 },
-  high: { width: 1920, height: 1080 },
+const ASPECT_RATIOS: Record<string, { ratioWbyH: number | null; label: string }> = {
+  '16:9': { ratioWbyH: 16 / 9, label: '16:9 (Landscape Wide)' },
+  '9:16': { ratioWbyH: 9 / 16, label: '9:16 (Portrait Tall)' },
+  '4:3': { ratioWbyH: 4 / 3, label: '4:3 (Classic Landscape)' },
+  '3:4': { ratioWbyH: 3 / 4, label: '3:4 (Classic Portrait)' },
+  '1:1': { ratioWbyH: 1 / 1, label: '1:1 (Square)' },
+  'custom': { ratioWbyH: null, label: 'Custom Dimensions' },
 };
+const ASPECT_RATIO_KEYS_ORDERED = ['16:9', '9:16', '4:3', '3:4', '1:1', 'custom'];
+
 
 type OutputFormat = 'png' | 'jpeg' | 'webp';
 
@@ -32,9 +37,9 @@ export default function PixsnapClient() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
-  const [selectedResolution, setSelectedResolution] = useState<string>('medium');
-  const [customWidth, setCustomWidth] = useState<number>(RESOLUTION_PRESETS.medium.width);
-  const [customHeight, setCustomHeight] = useState<number>(RESOLUTION_PRESETS.medium.height);
+  const [selectedAspectRatio, setSelectedAspectRatio] = useState<string>('16:9');
+  const [customWidth, setCustomWidth] = useState<number>(1280);
+  const [customHeight, setCustomHeight] = useState<number>(720);
   const [outputFormat, setOutputFormat] = useState<OutputFormat>('png');
   const [targetFileSizeKB, setTargetFileSizeKB] = useState<number>(0);
   
@@ -42,8 +47,8 @@ export default function PixsnapClient() {
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [webcamError, setWebcamError] = useState<string | null>(null);
   
-  const [isLoading, setIsLoading] = useState<boolean>(true); // For camera init/switching
-  const [isCapturingPhoto, setIsCapturingPhoto] = useState<boolean>(false); // For photo capture process
+  const [isLoading, setIsLoading] = useState<boolean>(true); 
+  const [isCapturingPhoto, setIsCapturingPhoto] = useState<boolean>(false);
 
   const [availableCameras, setAvailableCameras] = useState<MediaDeviceInfo[]>([]);
   const [currentCameraIndex, setCurrentCameraIndex] = useState<number>(0);
@@ -51,23 +56,42 @@ export default function PixsnapClient() {
 
 
   const currentDimensions = useMemo(() => {
-    if (selectedResolution === 'custom') {
-      return { width: Math.max(1, customWidth), height: Math.max(1, customHeight) };
-    }
-    return RESOLUTION_PRESETS[selectedResolution] || RESOLUTION_PRESETS.medium;
-  }, [selectedResolution, customWidth, customHeight]);
+    return { width: Math.max(1, customWidth), height: Math.max(1, customHeight) };
+  }, [customWidth, customHeight]);
 
-  useEffect(() => {
-    if (selectedResolution !== 'custom' && RESOLUTION_PRESETS[selectedResolution]) {
-      setCustomWidth(RESOLUTION_PRESETS[selectedResolution].width);
-      setCustomHeight(RESOLUTION_PRESETS[selectedResolution].height);
+  const handleAspectRatioChange = (newAspectRatioKey: string) => {
+    setSelectedAspectRatio(newAspectRatioKey);
+    if (newAspectRatioKey !== 'custom' && ASPECT_RATIOS[newAspectRatioKey]?.ratioWbyH) {
+      const ratio = ASPECT_RATIOS[newAspectRatioKey].ratioWbyH!;
+      const currentW = Number(customWidth) || 1280; // Fallback if customWidth is 0 or NaN somehow
+      setCustomHeight(Math.max(1, Math.round(currentW / ratio)));
     }
-  }, [selectedResolution]);
+  };
+
+  const handleWidthChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const rawValue = e.target.value;
+    const newNumericValue = parseInt(rawValue, 10);
+    const newWidthState = isNaN(newNumericValue) ? 1 : Math.max(1, newNumericValue);
+    setCustomWidth(newWidthState);
+
+    if (selectedAspectRatio !== 'custom' && ASPECT_RATIOS[selectedAspectRatio]?.ratioWbyH) {
+      const ratio = ASPECT_RATIOS[selectedAspectRatio].ratioWbyH!;
+      setCustomHeight(Math.max(1, Math.round(newWidthState / ratio)));
+    }
+  };
+  
+  const handleHeightChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const rawValue = e.target.value;
+    const newNumericValue = parseInt(rawValue, 10);
+    const newHeightState = isNaN(newNumericValue) ? 1 : Math.max(1, newNumericValue);
+    setCustomHeight(newHeightState);
+    setSelectedAspectRatio('custom'); 
+  };
 
   const initializeCamera = useCallback(async () => {
     setIsLoading(true);
     setWebcamError(null);
-    setCapturedImage(null); // Clear previous capture when re-initializing
+    setCapturedImage(null); 
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
       const videoCameras = devices.filter(device => device.kind === 'videoinput');
@@ -117,7 +141,7 @@ export default function PixsnapClient() {
       } else if (err.name === "NotReadableError" || err.name === "TrackStartError") {
         description = "The camera is currently in use by another application or a hardware error occurred.";
       }  else if (err.name === "OverconstrainedError" || err.name === "ConstraintNotSatisfiedError") {
-        description = `The selected camera resolution (${currentDimensions.width}x${currentDimensions.height}) may not be supported. Try a different one.`;
+        description = `The selected camera dimensions (${currentDimensions.width}x${currentDimensions.height}) may not be supported by your camera. Try different dimensions or aspect ratio.`;
       }
       setWebcamError(description);
       toast({
@@ -128,13 +152,14 @@ export default function PixsnapClient() {
       setIsLoading(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentCameraIndex, toast]); // currentDimensions removed to avoid re-init on every dimension change, handle resolution issues via OverconstrainedError
+  }, [currentCameraIndex, toast]); 
 
   useEffect(() => {
     initializeCamera();
     return () => {
       stream?.getTracks().forEach(track => track.stop());
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initializeCamera]); // initializeCamera is memoized
 
   const getEstimatedByteSize = (dataUri: string): number => {
@@ -193,7 +218,7 @@ export default function PixsnapClient() {
       const minQuality = 0.1;
       const qualityStep = 0.05;
       let attempts = 0;
-      const maxAttempts = Math.ceil((currentQuality - minQuality) / qualityStep) + 5;
+      const maxAttempts = Math.ceil((currentQuality - minQuality) / qualityStep) + 5; // Max attempts to prevent infinite loops
 
       let currentSize = getEstimatedByteSize(imageUrl);
 
@@ -204,11 +229,13 @@ export default function PixsnapClient() {
         const tempImgUrl = canvas.toDataURL(imageMimeType, currentQuality);
         const tempSize = getEstimatedByteSize(tempImgUrl);
 
+        // Prefer smaller images if we are over target, or if under target and new image is smaller
         if (tempSize < currentSize || (tempSize > currentSize && currentSize > targetSizeBytes) ) {
              imageUrl = tempImgUrl;
              currentSize = tempSize;
              finalQuality = currentQuality;
         } else if (tempSize > currentSize && currentSize <= targetSizeBytes) {
+            // If we are already under target, and the new image is larger, stop.
             break;
         }
         
@@ -261,7 +288,6 @@ export default function PixsnapClient() {
 
   const handleRetake = () => {
     setCapturedImage(null);
-    // No need to call initializeCamera here unless settings changed that require it
   };
 
   const handleSwitchCamera = () => {
@@ -270,22 +296,13 @@ export default function PixsnapClient() {
     }
   };
   
-  const handleWidthChange = (e: ChangeEvent<HTMLInputElement>) => {
-    const val = parseInt(e.target.value, 10);
-    setCustomWidth(isNaN(val) ? 0 : Math.max(1, val));
-  }
-  
-  const handleHeightChange = (e: ChangeEvent<HTMLInputElement>) => {
-    const val = parseInt(e.target.value, 10);
-    setCustomHeight(isNaN(val) ? 0 : Math.max(1, val));
-  }
-
   const handleFileSizeChange = (e: ChangeEvent<HTMLInputElement>) => {
     const val = parseInt(e.target.value, 10);
     setTargetFileSizeKB(isNaN(val) ? 0 : Math.max(0, val));
   };
 
   const isControlDisabled = isLoading || isCapturingPhoto;
+  const { width: previewWidth, height: previewHeight } = currentDimensions;
 
   return (
     <div className="flex flex-col min-h-screen bg-background text-foreground">
@@ -293,7 +310,7 @@ export default function PixsnapClient() {
         <h1 className="text-3xl font-bold text-primary flex items-center gap-2">
            <Camera className="w-8 h-8" /> PixSnap
         </h1>
-        <p className="text-sm text-muted-foreground">Capture images with custom dimensions, resolution, and format.</p>
+        <p className="text-sm text-muted-foreground">Capture images with custom dimensions, format, and target file size.</p>
       </header>
       
       <div className="flex flex-col lg:flex-row flex-1">
@@ -310,16 +327,15 @@ export default function PixsnapClient() {
             </CardHeader>
             <CardContent className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-end">
               <div>
-                <Label htmlFor="resolution" className="text-sm font-medium">Resolution</Label>
-                <Select value={selectedResolution} onValueChange={setSelectedResolution} disabled={isControlDisabled}>
-                  <SelectTrigger id="resolution" className="mt-1">
-                    <SelectValue placeholder="Select resolution" />
+                <Label htmlFor="aspectRatio" className="text-sm font-medium">Aspect Ratio</Label>
+                <Select value={selectedAspectRatio} onValueChange={handleAspectRatioChange} disabled={isControlDisabled}>
+                  <SelectTrigger id="aspectRatio" className="mt-1">
+                    <SelectValue placeholder="Select aspect ratio" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="low">Low (640x480)</SelectItem>
-                    <SelectItem value="medium">Medium (1280x720)</SelectItem>
-                    <SelectItem value="high">High (1920x1080)</SelectItem>
-                    <SelectItem value="custom">Custom</SelectItem>
+                    {ASPECT_RATIO_KEYS_ORDERED.map((key) => (
+                       <SelectItem key={key} value={key}>{ASPECT_RATIOS[key].label}</SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
@@ -336,26 +352,26 @@ export default function PixsnapClient() {
                   </SelectContent>
                 </Select>
               </div>
-              <div className={selectedResolution === 'custom' ? '' : 'opacity-50'}>
+              <div>
                 <Label htmlFor="width" className="text-sm font-medium">Width (px)</Label>
                 <Input 
                   id="width" 
                   type="number" 
                   value={customWidth}
                   onChange={handleWidthChange}
-                  disabled={selectedResolution !== 'custom' || isControlDisabled}
+                  disabled={isControlDisabled}
                   className="mt-1"
                   min="1"
                 />
               </div>
-              <div className={selectedResolution === 'custom' ? '' : 'opacity-50'}>
+              <div>
                 <Label htmlFor="height" className="text-sm font-medium">Height (px)</Label>
                 <Input 
                   id="height" 
                   type="number" 
                   value={customHeight}
                   onChange={handleHeightChange}
-                  disabled={selectedResolution !== 'custom' || isControlDisabled}
+                  disabled={isControlDisabled}
                   className="mt-1"
                   min="1"
                 />
@@ -387,7 +403,7 @@ export default function PixsnapClient() {
           <div 
             className="w-full max-w-4xl bg-muted rounded-lg shadow-inner overflow-hidden flex items-center justify-center relative"
             style={{ 
-              aspectRatio: `${currentDimensions.width > 0 && currentDimensions.height > 0 ? currentDimensions.width : 16}/${currentDimensions.width > 0 && currentDimensions.height > 0 ? currentDimensions.height : 9}`
+              aspectRatio: (previewWidth > 0 && previewHeight > 0) ? `${previewWidth}/${previewHeight}` : '16/9'
             }}
           >
             <video 
@@ -399,16 +415,16 @@ export default function PixsnapClient() {
                 "object-contain w-full h-full",
                 { 'opacity-0': capturedImage || isLoading || isCapturingPhoto || (webcamError && !stream) || (!stream && !webcamError && hasCameraPermission !== true) }
               )}
-              width={currentDimensions.width}
-              height={currentDimensions.height}
+              width={previewWidth}
+              height={previewHeight}
             />
             
             {capturedImage && !isCapturingPhoto && (
               <Image 
                 src={capturedImage} 
                 alt="Captured image" 
-                width={currentDimensions.width} 
-                height={currentDimensions.height} 
+                width={previewWidth} 
+                height={previewHeight} 
                 className="absolute inset-0 object-contain w-full h-full z-20"
                 data-ai-hint="user capture"
                 priority
