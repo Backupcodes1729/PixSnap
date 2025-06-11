@@ -1,6 +1,8 @@
 
 "use client";
 
+export const dynamic = 'force-dynamic'; // Ensures page is not prerendered
+
 import Image from 'next/image';
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useSearchParams } from 'next/navigation';
@@ -136,7 +138,6 @@ export default function PreviewCapturePage() {
 
         videoRef.current.onloadedmetadata = () => {
            // console.log("Video metadata loaded");
-           // setIsLoadingCamera(false); // This was potentially too late
         };
         videoRef.current.onerror = () => {
             console.error('Video element error');
@@ -184,7 +185,7 @@ export default function PreviewCapturePage() {
       }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isLoadingSettings, settings, initializeCamera]); 
+  }, [isLoadingSettings, settings, initializeCamera]); // initializeCamera is stable due to useCallback
 
   const getEstimatedByteSize = (dataUri: string): number => {
     if (!dataUri.includes(',')) return 0;
@@ -361,7 +362,7 @@ export default function PreviewCapturePage() {
       initializeCamera();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentCameraIndex]); 
+  }, [currentCameraIndex]); // Re-initialize if camera index changes explicitly
 
 
   if (isLoadingSettings) {
@@ -453,13 +454,14 @@ export default function PreviewCapturePage() {
               width={settings.width}
               height={settings.height}
               className="object-contain rounded-none md:rounded-lg shadow-2xl"
-              style={{maxWidth: '100%', maxHeight: 'calc(100vh - 0px)'}} 
+              style={{maxWidth: '100%', maxHeight: 'calc(100vh - 0px)'}} // Adjusted for potential control bar overlap
               data-ai-hint="user capture preview"
               priority 
             />
         )}
       </div>
 
+      {/* Floating Controls Bar */}
       <div className="absolute bottom-6 md:bottom-10 inset-x-0 z-40 flex items-center justify-center px-4">
         <div className="relative flex items-center justify-center bg-black/50 backdrop-blur-md p-2 md:p-3 rounded-2xl shadow-xl space-x-2 md:space-x-3">
           {!isPreviewing && stream && hasCameraPermission === true && !webcamError && !isLoadingCamera && (
@@ -492,9 +494,11 @@ export default function PreviewCapturePage() {
                 )}
               </Button>
               
+              {/* Spacer for balance if switch camera button is present */}
               {availableCameras.length > 1 && ( 
                 <div className="w-12 h-12 md:w-14 md:h-14 flex-shrink-0"></div>
               )}
+               {/* Spacers for balance if switch camera button is NOT present (to keep capture button centered) */}
                {availableCameras.length <= 1 && ( 
                 <>
                  <div className="w-12 h-12 md:w-14 md:h-14 flex-shrink-0 opacity-0 pointer-events-none"></div>
