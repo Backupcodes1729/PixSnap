@@ -2,7 +2,7 @@
 "use client";
 
 import type { ChangeEvent } from 'react';
-import { useState, useMemo } from 'react';
+import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -28,8 +28,6 @@ const ASPECT_RATIOS: Record<string, { ratioWbyH: number | null; label: string }>
 const ASPECT_RATIO_KEYS_ORDERED = ['16:9', '9:16', '4:3', '3:4', '1:1', 'custom'];
 
 type OutputFormat = 'png' | 'jpeg' | 'webp';
-
-const PIXSNAP_SETTINGS_STORAGE_KEY = 'pixsnapSettings';
 
 export default function PixsnapClient() {
   const { toast } = useToast();
@@ -75,7 +73,7 @@ export default function PixsnapClient() {
   };
 
   const handleOpenCameraAndCapture = () => {
-    const settings = {
+    const settingsToPass = {
       aspectRatioKey: selectedAspectRatio,
       width: customWidth,
       height: customHeight,
@@ -83,18 +81,25 @@ export default function PixsnapClient() {
       targetFileSizeKB: targetFileSizeKB,
     };
 
+    const params = new URLSearchParams();
+    params.append('aspectRatioKey', settingsToPass.aspectRatioKey);
+    params.append('width', settingsToPass.width.toString());
+    params.append('height', settingsToPass.height.toString());
+    params.append('format', settingsToPass.format);
+    params.append('targetFileSizeKB', settingsToPass.targetFileSizeKB.toString());
+    
+    const queryString = params.toString();
+
     try {
-      sessionStorage.setItem(PIXSNAP_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
-      
-      const previewWindow = window.open('/preview', '_blank', 'noopener,noreferrer');
+      const previewWindow = window.open(`/preview?${queryString}`, '_blank', 'noopener,noreferrer');
       if (!previewWindow) {
         toast({ title: 'Popup Blocked', description: 'Please allow popups for this site to open the camera.', variant: 'destructive' });
       } else {
-        toast({ title: 'Camera Opening...', description: 'Configure capture settings in the new window.'});
+        toast({ title: 'Camera Opening...', description: 'Settings applied. Configure capture in the new window.'});
       }
     } catch (e) {
-      console.error("Error using session storage or opening window:", e);
-      toast({ title: 'Error', description: 'Could not open camera. Your browser might be blocking it or session storage is unavailable.', variant: 'destructive' });
+      console.error("Error opening window:", e);
+      toast({ title: 'Error', description: 'Could not open camera window. Your browser might be blocking it.', variant: 'destructive' });
     }
   };
 

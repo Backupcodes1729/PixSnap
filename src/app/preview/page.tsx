@@ -3,6 +3,7 @@
 
 import Image from 'next/image';
 import { useEffect, useState, useRef, useCallback } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Download, RefreshCw, XCircle, Loader2, Camera as CameraIcon, VideoOff, SwitchCamera } from 'lucide-react';
@@ -19,10 +20,9 @@ interface PixsnapSettings {
   targetFileSizeKB: number;
 }
 
-const PIXSNAP_SETTINGS_STORAGE_KEY = 'pixsnapSettings';
-
 export default function PreviewCapturePage() {
   const { toast } = useToast();
+  const searchParams = useSearchParams();
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -41,27 +41,46 @@ export default function PreviewCapturePage() {
   const [availableCameras, setAvailableCameras] = useState<MediaDeviceInfo[]>([]);
   const [currentCameraIndex, setCurrentCameraIndex] = useState<number>(0);
 
-  // Load settings from sessionStorage
+  // Load settings from URL parameters
   useEffect(() => {
-    const settingsString = sessionStorage.getItem(PIXSNAP_SETTINGS_STORAGE_KEY);
-    if (settingsString) {
-      try {
-        const parsedSettings = JSON.parse(settingsString) as PixsnapSettings;
+    setIsLoadingSettings(true);
+    try {
+      const widthStr = searchParams.get('width');
+      const heightStr = searchParams.get('height');
+      const formatStr = searchParams.get('format');
+      const aspectRatioKeyStr = searchParams.get('aspectRatioKey');
+      const targetFileSizeKBStr = searchParams.get('targetFileSizeKB');
+
+      if (widthStr && heightStr && formatStr && aspectRatioKeyStr && targetFileSizeKBStr) {
+        const parsedSettings: PixsnapSettings = {
+          width: parseInt(widthStr, 10),
+          height: parseInt(heightStr, 10),
+          format: formatStr as OutputFormat,
+          aspectRatioKey: aspectRatioKeyStr,
+          targetFileSizeKB: parseInt(targetFileSizeKBStr, 10),
+        };
+
+        if (isNaN(parsedSettings.width) || isNaN(parsedSettings.height) || isNaN(parsedSettings.targetFileSizeKB)) {
+          throw new Error("Invalid number format in URL parameters.");
+        }
+        const validFormats: OutputFormat[] = ['png', 'jpeg', 'webp'];
+        if (!validFormats.includes(parsedSettings.format)) {
+            throw new Error("Invalid format in URL parameters.");
+        }
         setSettings(parsedSettings);
-      } catch (e) {
-        console.error("Error parsing settings:", e);
-        setSettings(null); // Explicitly set settings to null on parsing error
-        setWebcamError("Could not load capture settings due to a parsing error. Please close and try again.");
-        toast({ title: 'Settings Error', description: 'Invalid settings found during parsing.', variant: 'destructive' });
+      } else {
+        setSettings(null);
+        setWebcamError("Capture settings not found or incomplete in URL. Please configure them on the main page and try again.");
+        toast({ title: 'Settings Error', description: 'Incomplete settings provided via URL.', variant: 'destructive' });
       }
-    } else {
-      setSettings(null); // Explicitly set settings to null if not found
-      setWebcamError("Capture settings not found. Please configure them on the main page.");
-      // Toast for "No settings provided" is optional as UI will show error.
-      // toast({ title: 'Settings Error', description: 'No settings provided.', variant: 'destructive' });
+    } catch (e: any) {
+      console.error("Error parsing settings from URL:", e);
+      setSettings(null);
+      setWebcamError(`Error loading settings: ${e.message}. Please close this window, reconfigure on the main page, and try again.`);
+      toast({ title: 'Settings Error', description: `Invalid settings format: ${e.message}`, variant: 'destructive' });
     }
     setIsLoadingSettings(false);
-  }, []); // Changed dependency to [] to run once on mount
+  }, [searchParams, toast]);
 
   const initializeCamera = useCallback(async () => {
     if (!settings) return; 
@@ -71,7 +90,6 @@ export default function PreviewCapturePage() {
     setHasCameraPermission(null);
     setIsPreviewing(false); 
     setImageDataUrl(null);
-
 
     if (stream) {
       stream.getTracks().forEach(track => track.stop());
@@ -129,9 +147,9 @@ export default function PreviewCapturePage() {
       console.error("Error accessing webcam:", err);
       setHasCameraPermission(false);
       let description = 'Could not access webcam. Please ensure permissions are granted.';
-      if (err.name === "NotAllowedError") description = "Camera access was denied. Please enable camera permissions.";
-      else if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") description = "No camera found.";
-      else if (err.name === "NotReadableError" || err.name === "TrackStartError") description = "Camera is in use or hardware error.";
+      if (err.name === "NotAllowedError") description = "Camera access was denied. Please enable camera permissions in your browser settings.";
+      else if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") description = "No camera found on this device.";
+      else if (err.name === "NotReadableError" || err.name === "TrackStartError") description = "Camera is currently in use by another application or a hardware error occurred.";
       setWebcamError(description);
       setIsLoadingCamera(false);
       setStream(null);
@@ -154,7 +172,7 @@ export default function PreviewCapturePage() {
       }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isLoadingSettings, settings, currentCameraIndex]); 
+  }, [isLoadingSettings, settings, currentCameraIndex, initializeCamera]); // Added initializeCamera to dependencies
 
   const getEstimatedByteSize = (dataUri: string): number => {
     if (!dataUri.includes(',')) return 0;
@@ -212,25 +230,28 @@ export default function PreviewCapturePage() {
       const minQuality = 0.1;
       const qualityStep = 0.05;
       let attempts = 0;
-      const maxAttempts = Math.ceil((currentQuality - minQuality) / qualityStep) + 5;
+      const maxAttempts = Math.ceil((currentQuality - minQuality) / qualityStep) + 5; // Max attempts to find suitable quality
       let currentSize = getEstimatedByteSize(tempImageUrl);
 
+      // Iteratively reduce quality to meet target size
       while (currentSize > targetSizeBytes && currentQuality > minQuality && attempts < maxAttempts) {
         currentQuality -= qualityStep;
-        if (currentQuality < minQuality) currentQuality = minQuality;
+        if (currentQuality < minQuality) currentQuality = minQuality; // Ensure quality doesn't go below min
         
         const nextImgUrl = canvas.toDataURL(imageMimeType, currentQuality);
         const nextSize = getEstimatedByteSize(nextImgUrl);
 
+        // Prefer smaller size if still above target, or if it's the first valid size below target
         if (nextSize < currentSize || (nextSize > currentSize && currentSize > targetSizeBytes) ) {
              tempImageUrl = nextImgUrl;
              currentSize = nextSize;
              finalQuality = currentQuality;
         } else if (nextSize > currentSize && currentSize <= targetSizeBytes) {
+            // If current size is already below target, and next size is larger, stick with current
             break;
         }
         attempts++;
-        if (currentQuality <= minQuality && currentSize > targetSizeBytes) break; 
+        if (currentQuality <= minQuality && currentSize > targetSizeBytes) break; // Stop if min quality reached and still too large
       }
       if (currentSize > targetSizeBytes) {
         toast({ title: 'File Size Warning', description: `Could not meet target ${settings.targetFileSizeKB} KB. Actual: ${(currentSize / 1024).toFixed(1)} KB at quality ${(finalQuality!*100).toFixed(0)}%.`, duration: 5000 });
@@ -240,7 +261,7 @@ export default function PreviewCapturePage() {
     } else if (settings.format === 'png' && settings.targetFileSizeKB > 0) {
         const currentSize = getEstimatedByteSize(tempImageUrl);
          if (currentSize > settings.targetFileSizeKB * 1024) {
-            toast({ title: 'File Size Note', description: `PNG size: ${(currentSize / 1024).toFixed(1)} KB. Target size affects JPEG/WEBP.`, duration: 5000 });
+            toast({ title: 'File Size Note', description: `PNG size: ${(currentSize / 1024).toFixed(1)} KB. Target size affects JPEG/WEBP quality.`, duration: 5000 });
         }
     }
     
@@ -286,11 +307,17 @@ export default function PreviewCapturePage() {
   const handleSwitchCamera = () => {
     if (availableCameras.length > 1) {
       setCurrentCameraIndex((prevIndex) => (prevIndex + 1) % availableCameras.length);
+      // The useEffect listening to currentCameraIndex will re-initialize the camera
     }
   };
 
   const handleClose = () => {
-    window.close();
+    // Try to close the window. If it fails (e.g., not opened by script), inform user.
+    if (window.opener) {
+      window.close();
+    } else {
+      toast({ title: 'Cannot Close Window', description: 'This window was not opened by a script and cannot be closed automatically.', variant: 'default' });
+    }
   };
 
   if (isLoadingSettings) {
@@ -345,7 +372,7 @@ export default function PreviewCapturePage() {
             {(isLoadingCamera || isCapturingPhoto) && (
               <div className="absolute inset-0 flex flex-col items-center justify-center text-white bg-black/70 z-10">
                   <Loader2 size={48} className="animate-spin mb-2"/>
-                  <p>{isCapturingPhoto ? 'Processing Image...' : (availableCameras.length > 0 && stream && currentCameraIndex >= 0 ? 'Switching camera...' : 'Initializing Webcam...')}</p>
+                  <p>{isCapturingPhoto ? 'Processing Image...' : (availableCameras.length > 0 && stream && currentCameraIndex >= 0 && !webcamError ? 'Switching camera...' : 'Initializing Webcam...')}</p>
               </div>
             )}
 
@@ -354,11 +381,11 @@ export default function PreviewCapturePage() {
                 <VideoOff size={48} className="mb-2"/>
                 <p className="font-semibold">Webcam Error</p>
                 <p className="text-sm">{webcamError || "Camera access denied or unavailable."}</p>
-                 {hasCameraPermission === false && !webcamError && (
+                 {hasCameraPermission === false && !webcamError?.includes("denied") && ( // Only show if error is not already about denial
                     <Alert variant="destructive" className="mt-4 max-w-md bg-destructive/20 border-destructive/50 text-destructive-foreground">
-                        <AlertTitle>Camera Access Denied</AlertTitle>
+                        <AlertTitle>Camera Access Problem</AlertTitle>
                         <AlertDescription>
-                            Please enable camera permissions in your browser settings to use this feature.
+                           {webcamError || "Please ensure camera permissions are enabled and no other app is using the camera."}
                         </AlertDescription>
                     </Alert>
                  )}
@@ -368,6 +395,7 @@ export default function PreviewCapturePage() {
                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/70 text-white p-4 z-10 text-center">
                     <CameraIcon size={48} className="mb-2"/>
                     <p>Waiting for camera permission...</p>
+                    <p className="text-xs mt-1">If prompted, please allow camera access.</p>
                 </div>
             )}
           </div>
@@ -380,9 +408,9 @@ export default function PreviewCapturePage() {
               width={settings.width}
               height={settings.height}
               className="object-contain rounded-lg shadow-2xl"
-              style={{maxWidth: '100%', maxHeight: 'calc(100vh - 100px)'}}
+              style={{maxWidth: '100%', maxHeight: 'calc(100vh - 100px)'}} // Ensure it fits within viewport minus controls
               data-ai-hint="user capture preview"
-              priority
+              priority // Load the captured image quickly
             />
         )}
       </div>
