@@ -91,91 +91,107 @@ export default function PixsnapClient() {
     setSelectedAspectRatio('custom'); 
   };
 
-  const initializeCamera = useCallback(async () => {
-    setIsLoading(true);
-    setWebcamError(null);
-    // The useEffect cleanup will handle stopping the previous stream.
-    // No need to stop `stream` from useState here directly.
-
-    try {
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const videoCameras = devices.filter(device => device.kind === 'videoinput');
-      setAvailableCameras(videoCameras);
-
-      if (videoCameras.length === 0) {
-        setWebcamError('No video cameras found on this device.');
-        setHasCameraPermission(false);
-        toast({ title: 'Camera Error', description: 'No video cameras found.', variant: 'destructive' });
-        setIsLoading(false);
-        return;
-      }
-      
-      const selectedCameraId = videoCameras[currentCameraIndex % videoCameras.length]?.deviceId;
-      const constraints: MediaStreamConstraints = {
-        video: selectedCameraId ? { deviceId: { exact: selectedCameraId } } : true,
-      };
-
-      const newStream = await navigator.mediaDevices.getUserMedia(constraints);
-      setStream(newStream);
-      setHasCameraPermission(true);
-      if (videoRef.current) {
-        videoRef.current.srcObject = newStream;
-        videoRef.current.onloadedmetadata = () => {
-          setIsLoading(false);
-        };
-        videoRef.current.onerror = () => {
-            setWebcamError('Error with video stream.');
-            setIsLoading(false);
-            setHasCameraPermission(false);
-            newStream.getTracks().forEach(track => track.stop()); // Stop this new stream if it errors
-            setStream(null); // Clear stream state
-        }
-      } else {
-        setIsLoading(false); 
-      }
-    } catch (err: any) {
-      console.error("Error accessing webcam:", err);
-      setHasCameraPermission(false);
-      let description = 'Could not access webcam. Please ensure permissions are granted.';
-      if (err.name === "NotAllowedError") {
-        description = "Camera access was denied. Please enable camera permissions in your browser settings.";
-      } else if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
-        description = "No camera was found. Please ensure a camera is connected and enabled.";
-      } else if (err.name === "NotReadableError" || err.name === "TrackStartError") {
-        description = "The camera is currently in use by another application or a hardware error occurred.";
-      }  else if (err.name === "OverconstrainedError" || err.name === "ConstraintNotSatisfiedError") {
-        description = `The selected camera settings may not be supported by your camera. Try different dimensions or aspect ratio.`;
-      }
-      setWebcamError(description);
-      toast({
-        title: 'Webcam Error',
-        description: description,
-        variant: 'destructive',
-      });
-      setIsLoading(false);
-      setStream(null); // Clear stream state on error
-    }
-  // Key Change: Removed `stream` from dependency array.
-  // Setters like `setStream`, `setIsLoading` are stable and don't need to be dependencies.
-  }, [currentCameraIndex, toast, setAvailableCameras, setWebcamError, setHasCameraPermission, setIsLoading, setStream]); 
-
   useEffect(() => {
-    initializeCamera();
-    return () => {
-      // This cleanup runs when initializeCamera changes or component unmounts.
-      // It stops the stream that was set in the 'stream' state variable.
-      stream?.getTracks().forEach(track => track.stop());
+    let activeStream: MediaStream | null = null;
+
+    const startCamera = async () => {
+      setIsLoading(true);
+      setWebcamError(null);
+      setHasCameraPermission(null); // Reset permission status on new attempt
+
+      // Stop any previous stream associated with videoRef.current.srcObject
       if (videoRef.current && videoRef.current.srcObject) {
-         // Ensure the video element's srcObject is also explicitly cleared / tracks stopped
-         // if it's holding a stream reference that might not be the same as `stream` state
-         // (though ideally they should be in sync).
-        (videoRef.current.srcObject as MediaStream).getTracks().forEach(track => track.stop());
+        const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
+        tracks.forEach(track => track.stop());
+        videoRef.current.srcObject = null;
+      }
+      // Also attempt to stop the stream in React state, if it exists from a previous effect run
+      // This is to ensure we are thorough.
+      if (stream) {
+          stream.getTracks().forEach(track => track.stop());
+          setStream(null); // Clear the state stream immediately before getting a new one
+      }
+
+
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoCameras = devices.filter(device => device.kind === 'videoinput');
+        setAvailableCameras(videoCameras);
+
+        if (videoCameras.length === 0) {
+          setWebcamError('No video cameras found on this device.');
+          setHasCameraPermission(false);
+          toast({ title: 'Camera Error', description: 'No video cameras found.', variant: 'destructive' });
+          setIsLoading(false);
+          setStream(null);
+          return;
+        }
+        
+        const selectedCameraId = videoCameras[currentCameraIndex % videoCameras.length]?.deviceId;
+        const constraints: MediaStreamConstraints = {
+          video: selectedCameraId ? { deviceId: { exact: selectedCameraId } } : true,
+        };
+
+        const newMediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+        activeStream = newMediaStream;
+        setStream(newMediaStream);
+        setHasCameraPermission(true);
+
+        if (videoRef.current) {
+          videoRef.current.srcObject = newMediaStream;
+          videoRef.current.onloadedmetadata = () => {
+            setIsLoading(false);
+          };
+          videoRef.current.onerror = () => {
+              setWebcamError('Error with video stream.');
+              setIsLoading(false);
+              setHasCameraPermission(false);
+              newMediaStream.getTracks().forEach(track => track.stop());
+              if (videoRef.current && videoRef.current.srcObject === newMediaStream) {
+                  videoRef.current.srcObject = null;
+              }
+              // Only set stream to null if it's the one that errored
+              setStream(s => s === newMediaStream ? null : s);
+          };
+        } else {
+          setIsLoading(false); 
+        }
+      } catch (err: any) {
+        console.error("Error accessing webcam:", err);
+        setHasCameraPermission(false);
+        let description = 'Could not access webcam. Please ensure permissions are granted.';
+        if (err.name === "NotAllowedError") {
+          description = "Camera access was denied. Please enable camera permissions in your browser settings.";
+        } else if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
+          description = "No camera was found. Please ensure a camera is connected and enabled.";
+        } else if (err.name === "NotReadableError" || err.name === "TrackStartError") {
+          description = "The camera is currently in use by another application or a hardware error occurred.";
+        }  else if (err.name === "OverconstrainedError" || err.name === "ConstraintNotSatisfiedError") {
+          description = `The selected camera settings may not be supported by your camera. Try different dimensions or aspect ratio.`;
+        }
+        setWebcamError(description);
+        toast({
+          title: 'Webcam Error',
+          description: description,
+          variant: 'destructive',
+        });
+        setIsLoading(false);
+        setStream(null);
+      }
+    };
+
+    startCamera();
+
+    return () => {
+      // Cleanup: stop the stream that was active for this effect instance
+      activeStream?.getTracks().forEach(track => track.stop());
+      if (videoRef.current && videoRef.current.srcObject === activeStream) {
         videoRef.current.srcObject = null;
       }
     };
-  // The dependency on `initializeCamera` is correct.
-  // `stream` is added here because the cleanup function `stream?.getTracks()...` depends on it.
-  }, [initializeCamera, stream]); 
+  // Dependencies: currentCameraIndex is the primary trigger for re-initializing.
+  // toast and state setters are stable and included because they are used.
+  }, [currentCameraIndex, toast, setStream, setIsLoading, setWebcamError, setHasCameraPermission, setAvailableCameras]);
   
   useEffect(() => {
     const handlePreviewMessage = (event: MessageEvent) => {
@@ -405,12 +421,12 @@ export default function PixsnapClient() {
                   type="number" 
                   value={targetFileSizeKB}
                   onChange={handleFileSizeChange}
-                  disabled={isControlDisabled || outputFormat === 'png'} // Disable for PNG as it has limited effect
+                  disabled={isControlDisabled || outputFormat === 'png'}
                   className="mt-1"
                   min="0"
                   placeholder="0 for no limit"
                 />
-                {outputFormat === 'png' && ( // Always show this note for PNG
+                {outputFormat === 'png' && (
                   <p className="text-xs text-muted-foreground mt-1">PNG size control is limited; use JPEG/WEBP or adjust dimensions for smaller PNGs. Target size has minimal effect.</p>
                 )}
                  {outputFormat !== 'png' && targetFileSizeKB > 0 && (
@@ -435,7 +451,6 @@ export default function PixsnapClient() {
               muted 
               className={cn(
                 "object-contain w-full h-full",
-                // Show video if !isLoading, !isCapturingPhoto, !webcamError, stream exists, and permission is granted
                 { 'opacity-0': isLoading || isCapturingPhoto || !!webcamError || !stream || hasCameraPermission !== true }
               )}
               width={previewWidth}
@@ -445,7 +460,7 @@ export default function PixsnapClient() {
             {isLoading && (
               <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground bg-muted/90 z-30">
                   <Loader2 size={48} className="animate-spin mb-2"/>
-                  <p>{availableCameras.length > 0 && stream ? 'Switching camera...' : 'Initializing Webcam...'}</p>
+                  <p>{availableCameras.length > 0 && stream && currentCameraIndex > 0 ? 'Switching camera...' : 'Initializing Webcam...'}</p>
               </div>
             )}
             
@@ -464,16 +479,20 @@ export default function PixsnapClient() {
               </div>
             )}
 
-            {!isLoading && !isCapturingPhoto && !webcamError && !stream && hasCameraPermission !== true && (
+            {!isLoading && !isCapturingPhoto && !webcamError && !stream && hasCameraPermission !== false && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-muted/90 text-muted-foreground p-4 z-10 text-center">
                     <ImageIcon size={48} className="mb-2"/>
                     <p>Webcam feed will appear here.</p>
-                    {hasCameraPermission === false && ( // Explicitly false (denied)
-                        <p className="text-sm text-destructive mt-1">Camera access is required. Please check permissions or ensure a camera is connected.</p>
-                    )}
-                     {hasCameraPermission === null && ( // Not yet determined
+                     {hasCameraPermission === null && ( 
                         <p className="text-sm text-muted-foreground mt-1">Attempting to access camera...</p>
                     )}
+                </div>
+            )}
+             {!isLoading && !isCapturingPhoto && !webcamError && hasCameraPermission === false && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-muted/90 text-destructive p-4 z-10 text-center">
+                    <VideoOff size={48} className="mb-2"/>
+                    <p className="font-semibold">Camera Access Denied or Unavailable</p>
+                    <p className="text-sm mt-1">{webcamError || "Camera access is required. Please check permissions or ensure a camera is connected."}</p>
                 </div>
             )}
           </div>
@@ -493,11 +512,11 @@ export default function PixsnapClient() {
               <Button
                 onClick={handleSwitchCamera}
                 variant="outline"
-                disabled={isControlDisabled || !hasCameraPermission} // Also disable if no permission
+                disabled={isControlDisabled || !hasCameraPermission} 
                 className="px-4 py-3 sm:px-6 sm:py-6 text-base rounded-lg shadow-md w-full sm:w-auto"
                 aria-label="Switch camera"
               >
-                 {isLoading && stream && <Loader2 className="mr-2 h-5 w-5 animate-spin" />} 
+                 {isLoading && stream && currentCameraIndex > 0 && <Loader2 className="mr-2 h-5 w-5 animate-spin" />} 
                 <SwitchCamera className="mr-2 h-5 w-5" /> Switch
               </Button>
             )}
