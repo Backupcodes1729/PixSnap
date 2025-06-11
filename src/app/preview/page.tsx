@@ -9,6 +9,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Download, RefreshCw, XCircle, Loader2, Camera as CameraIcon, VideoOff, SwitchCamera } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
+import { generateImageName, GenerateImageNameInput } from '@/ai/flows/generate-image-name-flow';
 
 type OutputFormat = 'png' | 'jpeg' | 'webp';
 
@@ -34,9 +35,10 @@ export default function PreviewCapturePage() {
   const [webcamError, setWebcamError] = useState<string | null>(null);
   
   const [isLoadingSettings, setIsLoadingSettings] = useState<boolean>(true);
-  const [isLoadingCamera, setIsLoadingCamera] = useState<boolean>(true); // Start true
+  const [isLoadingCamera, setIsLoadingCamera] = useState<boolean>(true); 
   const [isCapturingPhoto, setIsCapturingPhoto] = useState<boolean>(false);
   const [isPreviewing, setIsPreviewing] = useState<boolean>(false);
+  const [isGeneratingName, setIsGeneratingName] = useState<boolean>(false);
 
   const [availableCameras, setAvailableCameras] = useState<MediaDeviceInfo[]>([]);
   const [currentCameraIndex, setCurrentCameraIndex] = useState<number>(0);
@@ -125,19 +127,21 @@ export default function PreviewCapturePage() {
       activeStream = newMediaStream;
       setStream(newMediaStream);
       setHasCameraPermission(true);
-
+      
       if (videoRef.current) {
         videoRef.current.srcObject = newMediaStream;
-        setIsLoadingCamera(false); // Set loading false once stream object is assigned
+        // Set loading false once stream object is assigned and videoRef is available
+        // This allows UI elements like "Switch Camera" to appear sooner
+        setIsLoadingCamera(false); 
 
         videoRef.current.onloadedmetadata = () => {
            // console.log("Video metadata loaded");
-           // Can be used for other checks if needed, like video dimensions
+           // setIsLoadingCamera(false); // This was potentially too late
         };
         videoRef.current.onerror = () => {
             console.error('Video element error');
             setWebcamError('Error with video stream playback.');
-            if (isLoadingCamera) setIsLoadingCamera(false);
+            if (isLoadingCamera) setIsLoadingCamera(false); // Ensure loading is false on error
             setHasCameraPermission(false);
             if (activeStream) {
                 activeStream.getTracks().forEach(track => track.stop());
@@ -161,7 +165,8 @@ export default function PreviewCapturePage() {
       setIsLoadingCamera(false);
       setStream(null);
     }
-  }, [settings, currentCameraIndex]); // Removed toast from deps, it should be stable
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings, currentCameraIndex]); 
 
   useEffect(() => {
     if (!isLoadingSettings && settings && !isPreviewing) { 
@@ -179,7 +184,7 @@ export default function PreviewCapturePage() {
       }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isLoadingSettings, settings, initializeCamera]); // initializeCamera handles currentCameraIndex internally
+  }, [isLoadingSettings, settings, initializeCamera]); 
 
   const getEstimatedByteSize = (dataUri: string): number => {
     if (!dataUri.includes(',')) return 0;
@@ -286,33 +291,59 @@ export default function PreviewCapturePage() {
     toast({ title: 'Image Captured!' });
   };
 
-  const handleDownload = () => {
+  const handleDownload = async () => {
     if (!imageDataUrl || !settings) {
         toast({ title: 'Download Error', description: 'Image data not available.', variant: 'destructive' });
         return;
     }
+    setIsGeneratingName(true);
+    toast({ title: 'Generating Filename', description: 'Getting a creative name for your image...', duration: 3000 });
+
+    let filename = `pixsnap_image_${settings.width}x${settings.height}.${settings.format}`;
+
+    try {
+      const genkitInput: GenerateImageNameInput = {
+        settings: {
+          width: settings.width,
+          height: settings.height,
+          format: settings.format,
+        },
+        timestamp: new Date().toISOString(),
+      };
+      const response = await generateImageName(genkitInput);
+      if (response && response.suggestedNamePrefix) {
+        filename = `${response.suggestedNamePrefix}_${settings.width}x${settings.height}.${settings.format}`;
+        toast({ title: 'Filename Generated!', description: `Using: ${filename}`, duration: 2000 });
+      } else {
+        toast({ title: 'Filename Generation Failed', description: 'Using default filename.', variant: 'destructive', duration: 3000 });
+      }
+    } catch (error) {
+      console.error('Error generating filename with Genkit:', error);
+      toast({ title: 'Filename Generation Error', description: 'Using default filename. Check console for details.', variant: 'destructive', duration: 5000 });
+    } finally {
+      setIsGeneratingName(false);
+    }
+
     const link = document.createElement('a');
     link.href = imageDataUrl;
-    link.download = `pixsnap_image_${settings.width}x${settings.height}.${settings.format}`;
+    link.download = filename;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-    toast({ title: 'Download Started', description: `Image saved as ${link.download}` });
+    toast({ title: 'Download Started', description: `Image saved as ${filename}` });
   };
 
   const handleRetake = () => {
     setIsPreviewing(false);
     setImageDataUrl(null);
-    // setCurrentCameraIndex(prev => prev); // This line might be redundant if initializeCamera is called directly
     if (settings) { 
-        initializeCamera(); // Re-initialize camera with current settings (and currentCameraIndex)
+        initializeCamera(); 
     }
   };
 
   const handleSwitchCamera = () => {
     if (availableCameras.length > 1) {
       setCurrentCameraIndex((prevIndex) => (prevIndex + 1) % availableCameras.length);
-      // initializeCamera will be called by the useEffect that depends on currentCameraIndex via initializeCamera's deps
     }
   };
 
@@ -320,20 +351,17 @@ export default function PreviewCapturePage() {
     if (window.opener) {
       window.close();
     } else {
-      // Fallback for windows not opened by script, e.g. direct navigation
-      window.location.assign('/'); // Or some other appropriate fallback
+      window.location.assign('/'); 
       toast({ title: 'Closing Window', description: 'Attempting to close. If this fails, please close the tab manually.', variant: 'default' });
     }
   };
   
   useEffect(() => {
-    // This effect now specifically re-initializes camera when currentCameraIndex changes
-    // and settings are loaded and not previewing.
     if (!isLoadingSettings && settings && !isPreviewing) {
       initializeCamera();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentCameraIndex]); // Removed initializeCamera from here to avoid potential loops, initializeCamera deps handle settings
+  }, [currentCameraIndex]); 
 
 
   if (isLoadingSettings) {
@@ -432,7 +460,6 @@ export default function PreviewCapturePage() {
         )}
       </div>
 
-      {/* Floating Action Buttons Container */}
       <div className="absolute bottom-6 md:bottom-10 inset-x-0 z-40 flex items-center justify-center px-4">
         <div className="relative flex items-center justify-center bg-black/50 backdrop-blur-md p-2 md:p-3 rounded-2xl shadow-xl space-x-2 md:space-x-3">
           {!isPreviewing && stream && hasCameraPermission === true && !webcamError && !isLoadingCamera && (
@@ -465,10 +492,10 @@ export default function PreviewCapturePage() {
                 )}
               </Button>
               
-              {availableCameras.length > 1 && ( /* Invisible spacer for symmetry if switch camera is present */
+              {availableCameras.length > 1 && ( 
                 <div className="w-12 h-12 md:w-14 md:h-14 flex-shrink-0"></div>
               )}
-               {availableCameras.length <= 1 && ( /* Spacers if capture is only button to center it more effectively */
+               {availableCameras.length <= 1 && ( 
                 <>
                  <div className="w-12 h-12 md:w-14 md:h-14 flex-shrink-0 opacity-0 pointer-events-none"></div>
                  <div className="w-12 h-12 md:w-14 md:h-14 flex-shrink-0 opacity-0 pointer-events-none"></div>
@@ -479,11 +506,12 @@ export default function PreviewCapturePage() {
 
           {isPreviewing && imageDataUrl && (
             <>
-              <Button onClick={handleRetake} variant="outline" className="text-sm md:text-base px-4 py-2 bg-white/20 hover:bg-white/30 border-white/40 text-white rounded-full">
+              <Button onClick={handleRetake} variant="outline" className="text-sm md:text-base px-4 py-2 bg-white/20 hover:bg-white/30 border-white/40 text-white rounded-full" disabled={isGeneratingName}>
                 <RefreshCw className="mr-2 h-4 w-4" /> Retake
               </Button>
-              <Button onClick={handleDownload} className="text-base md:text-base px-4 py-2 bg-accent hover:bg-accent/90 text-accent-foreground rounded-full">
-                <Download className="mr-2 h-5 w-5" /> Download
+              <Button onClick={handleDownload} className="text-base md:text-base px-4 py-2 bg-accent hover:bg-accent/90 text-accent-foreground rounded-full" disabled={isGeneratingName}>
+                {isGeneratingName ? <Loader2 className="mr-2 h-5 w-5 animate-spin" /> : <Download className="mr-2 h-5 w-5" />}
+                 Download
               </Button>
             </>
           )}
@@ -492,4 +520,3 @@ export default function PreviewCapturePage() {
     </div>
   );
 }
-    
