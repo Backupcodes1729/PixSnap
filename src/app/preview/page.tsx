@@ -41,7 +41,7 @@ export default function PreviewCapturePage() {
   const [availableCameras, setAvailableCameras] = useState<MediaDeviceInfo[]>([]);
   const [currentCameraIndex, setCurrentCameraIndex] = useState<number>(0);
 
-  // Load settings from sessionStorage and initialize camera
+  // Load settings from sessionStorage
   useEffect(() => {
     const settingsString = sessionStorage.getItem(PIXSNAP_SETTINGS_STORAGE_KEY);
     if (settingsString) {
@@ -50,24 +50,26 @@ export default function PreviewCapturePage() {
         setSettings(parsedSettings);
       } catch (e) {
         console.error("Error parsing settings:", e);
-        setWebcamError("Could not load capture settings. Please close and try again.");
-        toast({ title: 'Settings Error', description: 'Invalid settings found.', variant: 'destructive' });
+        setSettings(null); // Explicitly set settings to null on parsing error
+        setWebcamError("Could not load capture settings due to a parsing error. Please close and try again.");
+        toast({ title: 'Settings Error', description: 'Invalid settings found during parsing.', variant: 'destructive' });
       }
     } else {
+      setSettings(null); // Explicitly set settings to null if not found
       setWebcamError("Capture settings not found. Please configure them on the main page.");
-      toast({ title: 'Settings Error', description: 'No settings provided.', variant: 'destructive' });
+      // Toast for "No settings provided" is optional as UI will show error.
+      // toast({ title: 'Settings Error', description: 'No settings provided.', variant: 'destructive' });
     }
     setIsLoadingSettings(false);
-    // sessionStorage.removeItem(PIXSNAP_SETTINGS_STORAGE_KEY); // Keep for retakes or remove if settings shouldn't persist for retake
-  }, [toast]);
+  }, []); // Changed dependency to [] to run once on mount
 
   const initializeCamera = useCallback(async () => {
-    if (!settings) return; // Wait for settings to load
+    if (!settings) return; 
 
     setIsLoadingCamera(true);
     setWebcamError(null);
     setHasCameraPermission(null);
-    setIsPreviewing(false); // Ensure we are in live feed mode
+    setIsPreviewing(false); 
     setImageDataUrl(null);
 
 
@@ -99,9 +101,6 @@ export default function PreviewCapturePage() {
       const constraints: MediaStreamConstraints = {
         video: { 
             deviceId: selectedCameraId ? { exact: selectedCameraId } : undefined,
-            // Request preferred resolution for the live preview if needed, but capture resolution is handled by canvas
-            // width: { ideal: settings.width }, 
-            // height: { ideal: settings.height }
         }
       };
 
@@ -137,14 +136,14 @@ export default function PreviewCapturePage() {
       setIsLoadingCamera(false);
       setStream(null);
     }
-  }, [settings, currentCameraIndex, stream]); // Add stream as dependency to re-init if it's externally cleared
+  }, [settings, currentCameraIndex]); 
 
   useEffect(() => {
-    if (!isLoadingSettings && settings && !isPreviewing) { // Only initialize if settings are loaded and not already previewing a captured image
+    if (!isLoadingSettings && settings && !isPreviewing) { 
       initializeCamera();
     }
     
-    return () => { // Cleanup stream on component unmount
+    return () => { 
       if (stream) {
         stream.getTracks().forEach(track => track.stop());
       }
@@ -155,8 +154,7 @@ export default function PreviewCapturePage() {
       }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isLoadingSettings, settings, currentCameraIndex]); // initializeCamera is stable due to useCallback
-  // Removed initializeCamera from deps to avoid loop, useEffect for currentCameraIndex handles re-init for switch
+  }, [isLoadingSettings, settings, currentCameraIndex]); 
 
   const getEstimatedByteSize = (dataUri: string): number => {
     if (!dataUri.includes(',')) return 0;
@@ -250,17 +248,15 @@ export default function PreviewCapturePage() {
     setIsPreviewing(true);
     setIsCapturingPhoto(false);
 
-    // Stop camera stream after capture
     if (stream) {
       stream.getTracks().forEach(track => track.stop());
-      setStream(null); // Clear stream state
+      setStream(null); 
     }
     if (videoRef.current && videoRef.current.srcObject) {
         const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
         tracks.forEach(track => track.stop());
         videoRef.current.srcObject = null;
     }
-
 
     toast({ title: 'Image Captured!' });
   };
@@ -282,7 +278,7 @@ export default function PreviewCapturePage() {
   const handleRetake = () => {
     setIsPreviewing(false);
     setImageDataUrl(null);
-    if (settings) { // Re-initialize camera
+    if (settings) { 
         initializeCamera();
     }
   };
@@ -290,7 +286,6 @@ export default function PreviewCapturePage() {
   const handleSwitchCamera = () => {
     if (availableCameras.length > 1) {
       setCurrentCameraIndex((prevIndex) => (prevIndex + 1) % availableCameras.length);
-      // The useEffect listening to currentCameraIndex will re-initialize the camera.
     }
   };
 
