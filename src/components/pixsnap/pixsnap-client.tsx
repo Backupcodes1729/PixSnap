@@ -3,7 +3,7 @@
 
 import Image from 'next/image';
 import type { ChangeEvent } from 'react';
-import { useState, useRef, useEffect, useMemo } from 'react';
+import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -16,7 +16,8 @@ import {
 } from '@/components/ui/select';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useToast } from '@/hooks/use-toast';
-import { Camera, Download, Settings2, Image as ImageIcon, VideoOff, Loader2, FileSliders } from 'lucide-react';
+import { Camera, Download, Settings2, Image as ImageIcon, VideoOff, Loader2, SwitchCamera } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
 const RESOLUTION_PRESETS: Record<string, { width: number; height: number }> = {
   low: { width: 640, height: 480 },
@@ -35,12 +36,19 @@ export default function PixsnapClient() {
   const [customWidth, setCustomWidth] = useState<number>(RESOLUTION_PRESETS.medium.width);
   const [customHeight, setCustomHeight] = useState<number>(RESOLUTION_PRESETS.medium.height);
   const [outputFormat, setOutputFormat] = useState<OutputFormat>('png');
-  const [targetFileSizeKB, setTargetFileSizeKB] = useState<number>(0); // 0 for no limit
+  const [targetFileSizeKB, setTargetFileSizeKB] = useState<number>(0);
   
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [webcamError, setWebcamError] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(true); // Start true for initial webcam setup
+  
+  const [isLoading, setIsLoading] = useState<boolean>(true); // For camera init/switching
+  const [isCapturingPhoto, setIsCapturingPhoto] = useState<boolean>(false); // For photo capture process
+
+  const [availableCameras, setAvailableCameras] = useState<MediaDeviceInfo[]>([]);
+  const [currentCameraIndex, setCurrentCameraIndex] = useState<number>(0);
+  const [hasCameraPermission, setHasCameraPermission] = useState<boolean | null>(null);
+
 
   const currentDimensions = useMemo(() => {
     if (selectedResolution === 'custom') {
@@ -56,37 +64,78 @@ export default function PixsnapClient() {
     }
   }, [selectedResolution]);
 
-  useEffect(() => {
-    async function setupWebcam() {
-      setIsLoading(true);
-      setWebcamError(null);
-      try {
-        if (stream) {
-          stream.getTracks().forEach(track => track.stop());
-        }
-        const newStream = await navigator.mediaDevices.getUserMedia({ video: true });
-        setStream(newStream);
-        if (videoRef.current) {
-          videoRef.current.srcObject = newStream;
-        }
-      } catch (err) {
-        console.error("Error accessing webcam:", err);
-        setWebcamError('Failed to access webcam. Please check permissions and try again.');
-        toast({
-          title: 'Webcam Error',
-          description: 'Could not access webcam. Please ensure permissions are granted.',
-          variant: 'destructive',
-        });
-      } finally {
+  const initializeCamera = useCallback(async () => {
+    setIsLoading(true);
+    setWebcamError(null);
+    setCapturedImage(null); // Clear previous capture when re-initializing
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videoCameras = devices.filter(device => device.kind === 'videoinput');
+      setAvailableCameras(videoCameras);
+
+      if (videoCameras.length === 0) {
+        setWebcamError('No video cameras found on this device.');
+        setHasCameraPermission(false);
+        toast({ title: 'Camera Error', description: 'No video cameras found.', variant: 'destructive' });
         setIsLoading(false);
+        return;
       }
+      
+      const selectedCameraId = videoCameras[currentCameraIndex % videoCameras.length]?.deviceId;
+      const constraints: MediaStreamConstraints = {
+        video: selectedCameraId ? { deviceId: { exact: selectedCameraId } } : true,
+      };
+
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+      }
+
+      const newStream = await navigator.mediaDevices.getUserMedia(constraints);
+      setStream(newStream);
+      setHasCameraPermission(true);
+      if (videoRef.current) {
+        videoRef.current.srcObject = newStream;
+        videoRef.current.onloadedmetadata = () => {
+          setIsLoading(false);
+        };
+        videoRef.current.onerror = () => {
+            setWebcamError('Error with video stream.');
+            setIsLoading(false);
+            setHasCameraPermission(false);
+        }
+      } else {
+        setIsLoading(false); 
+      }
+    } catch (err: any) {
+      console.error("Error accessing webcam:", err);
+      setHasCameraPermission(false);
+      let description = 'Could not access webcam. Please ensure permissions are granted.';
+      if (err.name === "NotAllowedError") {
+        description = "Camera access was denied. Please enable camera permissions in your browser settings.";
+      } else if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
+        description = "No camera was found. Please ensure a camera is connected and enabled.";
+      } else if (err.name === "NotReadableError" || err.name === "TrackStartError") {
+        description = "The camera is currently in use by another application or a hardware error occurred.";
+      }  else if (err.name === "OverconstrainedError" || err.name === "ConstraintNotSatisfiedError") {
+        description = `The selected camera resolution (${currentDimensions.width}x${currentDimensions.height}) may not be supported. Try a different one.`;
+      }
+      setWebcamError(description);
+      toast({
+        title: 'Webcam Error',
+        description: description,
+        variant: 'destructive',
+      });
+      setIsLoading(false);
     }
-    setupWebcam();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentCameraIndex, toast]); // currentDimensions removed to avoid re-init on every dimension change, handle resolution issues via OverconstrainedError
+
+  useEffect(() => {
+    initializeCamera();
     return () => {
       stream?.getTracks().forEach(track => track.stop());
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [initializeCamera]); // initializeCamera is memoized
 
   const getEstimatedByteSize = (dataUri: string): number => {
     if (!dataUri.includes(',')) return 0;
@@ -97,11 +146,11 @@ export default function PixsnapClient() {
   };
 
   const handleCapture = () => {
-    if (!videoRef.current || !canvasRef.current || !stream) {
-      toast({ title: 'Error', description: 'Webcam not ready.', variant: 'destructive' });
+    if (!videoRef.current || !canvasRef.current || !stream || !hasCameraPermission) {
+      toast({ title: 'Error', description: 'Webcam not ready or permission denied.', variant: 'destructive' });
       return;
     }
-    setIsLoading(true);
+    setIsCapturingPhoto(true);
     const video = videoRef.current;
     const canvas = canvasRef.current;
     
@@ -111,15 +160,11 @@ export default function PixsnapClient() {
     const context = canvas.getContext('2d');
     if (!context) {
       toast({ title: 'Error', description: 'Could not get canvas context.', variant: 'destructive' });
-      setIsLoading(false);
+      setIsCapturingPhoto(false);
       return;
     }
     
-    // Flip the image horizontally for a mirror effect if desired
-    // context.translate(canvas.width, 0);
-    // context.scale(-1, 1);
     context.drawImage(video, 0, 0, canvas.width, canvas.height);
-    // context.setTransform(1, 0, 0, 1, 0, 0); // Reset transform
     
     let imageMimeType: string;
     let initialQuality: number | undefined = undefined;
@@ -127,7 +172,7 @@ export default function PixsnapClient() {
     switch (outputFormat) {
       case 'jpeg':
         imageMimeType = 'image/jpeg';
-        initialQuality = 0.92; // Slightly lower default for better size control
+        initialQuality = 0.92; 
         break;
       case 'webp':
         imageMimeType = 'image/webp';
@@ -146,9 +191,9 @@ export default function PixsnapClient() {
       let currentQuality = initialQuality;
       const targetSizeBytes = targetFileSizeKB * 1024;
       const minQuality = 0.1;
-      const qualityStep = 0.05; // Finer steps for adjustment
+      const qualityStep = 0.05;
       let attempts = 0;
-      const maxAttempts = Math.ceil((currentQuality - minQuality) / qualityStep) + 2; // Max attempts based on steps
+      const maxAttempts = Math.ceil((currentQuality - minQuality) / qualityStep) + 5;
 
       let currentSize = getEstimatedByteSize(imageUrl);
 
@@ -159,18 +204,16 @@ export default function PixsnapClient() {
         const tempImgUrl = canvas.toDataURL(imageMimeType, currentQuality);
         const tempSize = getEstimatedByteSize(tempImgUrl);
 
-        // Only update if the new size is smaller, to avoid issues with quality/size non-linearity at very low qualities
-        if (tempSize < currentSize || currentSize > targetSizeBytes) {
+        if (tempSize < currentSize || (tempSize > currentSize && currentSize > targetSizeBytes) ) {
              imageUrl = tempImgUrl;
              currentSize = tempSize;
              finalQuality = currentQuality;
         } else if (tempSize > currentSize && currentSize <= targetSizeBytes) {
-            // If reducing quality made it larger but we were already under target, stop.
             break;
         }
         
         attempts++;
-        if (currentQuality === minQuality && currentSize > targetSizeBytes) break; 
+        if (currentQuality <= minQuality && currentSize > targetSizeBytes) break; 
       }
 
       if (currentSize > targetSizeBytes) {
@@ -198,7 +241,7 @@ export default function PixsnapClient() {
     }
 
     setCapturedImage(imageUrl);
-    setIsLoading(false);
+    setIsCapturingPhoto(false);
     toast({ title: 'Image Captured!', description: 'Your image is ready for download.' });
   };
 
@@ -218,6 +261,13 @@ export default function PixsnapClient() {
 
   const handleRetake = () => {
     setCapturedImage(null);
+    // No need to call initializeCamera here unless settings changed that require it
+  };
+
+  const handleSwitchCamera = () => {
+    if (availableCameras.length > 1) {
+      setCurrentCameraIndex((prevIndex) => (prevIndex + 1) % availableCameras.length);
+    }
   };
   
   const handleWidthChange = (e: ChangeEvent<HTMLInputElement>) => {
@@ -235,6 +285,7 @@ export default function PixsnapClient() {
     setTargetFileSizeKB(isNaN(val) ? 0 : Math.max(0, val));
   };
 
+  const isControlDisabled = isLoading || isCapturingPhoto;
 
   return (
     <div className="flex flex-col min-h-screen bg-background text-foreground">
@@ -260,7 +311,7 @@ export default function PixsnapClient() {
             <CardContent className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-end">
               <div>
                 <Label htmlFor="resolution" className="text-sm font-medium">Resolution</Label>
-                <Select value={selectedResolution} onValueChange={setSelectedResolution} disabled={isLoading}>
+                <Select value={selectedResolution} onValueChange={setSelectedResolution} disabled={isControlDisabled}>
                   <SelectTrigger id="resolution" className="mt-1">
                     <SelectValue placeholder="Select resolution" />
                   </SelectTrigger>
@@ -274,7 +325,7 @@ export default function PixsnapClient() {
               </div>
               <div>
                 <Label htmlFor="format" className="text-sm font-medium">Format</Label>
-                <Select value={outputFormat} onValueChange={(value) => setOutputFormat(value as OutputFormat)} disabled={isLoading}>
+                <Select value={outputFormat} onValueChange={(value) => setOutputFormat(value as OutputFormat)} disabled={isControlDisabled}>
                   <SelectTrigger id="format" className="mt-1">
                     <SelectValue placeholder="Select format" />
                   </SelectTrigger>
@@ -292,7 +343,7 @@ export default function PixsnapClient() {
                   type="number" 
                   value={customWidth}
                   onChange={handleWidthChange}
-                  disabled={selectedResolution !== 'custom' || isLoading}
+                  disabled={selectedResolution !== 'custom' || isControlDisabled}
                   className="mt-1"
                   min="1"
                 />
@@ -304,7 +355,7 @@ export default function PixsnapClient() {
                   type="number" 
                   value={customHeight}
                   onChange={handleHeightChange}
-                  disabled={selectedResolution !== 'custom' || isLoading}
+                  disabled={selectedResolution !== 'custom' || isControlDisabled}
                   className="mt-1"
                   min="1"
                 />
@@ -316,7 +367,7 @@ export default function PixsnapClient() {
                   type="number" 
                   value={targetFileSizeKB}
                   onChange={handleFileSizeChange}
-                  disabled={isLoading}
+                  disabled={isControlDisabled}
                   className="mt-1"
                   min="0"
                   placeholder="0 for no limit"
@@ -339,77 +390,111 @@ export default function PixsnapClient() {
               aspectRatio: `${currentDimensions.width > 0 && currentDimensions.height > 0 ? currentDimensions.width : 16}/${currentDimensions.width > 0 && currentDimensions.height > 0 ? currentDimensions.height : 9}`
             }}
           >
-            {isLoading && !stream && !capturedImage && (
-               <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground bg-muted/50 z-10">
-                  <Loader2 size={48} className="animate-spin mb-2"/>
-                  <p>Initializing Webcam...</p>
-               </div>
-            )}
-            {webcamError ? (
-              <div className="flex flex-col items-center text-destructive p-4 text-center">
-                <VideoOff size={48} className="mb-2"/>
-                <p className="font-semibold">Webcam Error</p>
-                <p className="text-sm">{webcamError}</p>
-              </div>
-            ) : capturedImage ? (
+            <video 
+              ref={videoRef} 
+              autoPlay 
+              playsInline 
+              muted 
+              className={cn(
+                "object-contain w-full h-full",
+                { 'opacity-0': capturedImage || isLoading || isCapturingPhoto || (webcamError && !stream) || (!stream && !webcamError && hasCameraPermission !== true) }
+              )}
+              width={currentDimensions.width}
+              height={currentDimensions.height}
+            />
+            
+            {capturedImage && !isCapturingPhoto && (
               <Image 
                 src={capturedImage} 
                 alt="Captured image" 
                 width={currentDimensions.width} 
                 height={currentDimensions.height} 
-                className="object-contain w-full h-full"
+                className="absolute inset-0 object-contain w-full h-full z-20"
                 data-ai-hint="user capture"
                 priority
               />
-            ) : stream ? (
-              <video 
-                ref={videoRef} 
-                autoPlay 
-                playsInline 
-                muted 
-                className="object-contain w-full h-full"
-                width={currentDimensions.width}
-                height={currentDimensions.height}
-              />
-            ) : (
-              <div className="flex flex-col items-center text-muted-foreground p-4">
-                  <ImageIcon size={48} className="mb-2"/>
-                  <p>Webcam feed will appear here</p>
+            )}
+
+            {isLoading && !capturedImage && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground bg-muted/90 z-30">
+                  <Loader2 size={48} className="animate-spin mb-2"/>
+                  <p>{availableCameras.length > 0 && stream ? 'Switching camera...' : 'Initializing Webcam...'}</p>
               </div>
+            )}
+            
+            {isCapturingPhoto && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground bg-muted/90 z-30">
+                  <Loader2 size={48} className="animate-spin mb-2"/>
+                  <p>Processing Image...</p>
+              </div>
+            )}
+
+            {!isLoading && !isCapturingPhoto && webcamError && !capturedImage && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center bg-muted/90 text-destructive p-4 text-center z-10">
+                <VideoOff size={48} className="mb-2"/>
+                <p className="font-semibold">Webcam Error</p>
+                <p className="text-sm">{webcamError}</p>
+              </div>
+            )}
+
+            {!isLoading && !isCapturingPhoto && !webcamError && !stream && !capturedImage && hasCameraPermission !== true && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-muted/90 text-muted-foreground p-4 z-10">
+                    <ImageIcon size={48} className="mb-2"/>
+                    <p>Webcam feed will appear here.</p>
+                    {hasCameraPermission === false && (
+                        <p className="text-sm text-destructive mt-1">Camera access is required. Please check permissions or ensure a camera is connected.</p>
+                    )}
+                     {hasCameraPermission === null && (
+                        <p className="text-sm text-muted-foreground mt-1">Attempting to access camera...</p>
+                    )}
+                </div>
             )}
           </div>
           <canvas ref={canvasRef} className="hidden"></canvas>
           
           <div className="flex flex-col sm:flex-row flex-wrap justify-center gap-3 sm:gap-4 w-full max-w-md">
             {!capturedImage ? (
-              <Button 
-                onClick={handleCapture} 
-                disabled={!stream || isLoading || !!webcamError} 
-                className="bg-accent hover:bg-accent/90 text-accent-foreground px-6 py-3 sm:px-8 sm:py-6 text-base sm:text-lg rounded-lg shadow-md w-full sm:w-auto flex-1 sm:flex-none"
-                aria-label="Capture image"
-              >
-                {isLoading && stream && <Loader2 className="mr-2 h-5 w-5 animate-spin" />}
-                <Camera className="mr-2 h-5 w-5" /> Capture
-              </Button>
+              <>
+                <Button 
+                  onClick={handleCapture} 
+                  disabled={!stream || !hasCameraPermission || isControlDisabled || !!webcamError} 
+                  className="bg-accent hover:bg-accent/90 text-accent-foreground px-6 py-3 sm:px-8 sm:py-6 text-base sm:text-lg rounded-lg shadow-md w-full sm:w-auto flex-1 sm:flex-none"
+                  aria-label="Capture image"
+                >
+                  {(isLoading || isCapturingPhoto) && <Loader2 className="mr-2 h-5 w-5 animate-spin" />}
+                  <Camera className="mr-2 h-5 w-5" /> Capture
+                </Button>
+                {availableCameras.length > 1 && (
+                  <Button
+                    onClick={handleSwitchCamera}
+                    variant="outline"
+                    disabled={isControlDisabled}
+                    className="px-4 py-3 sm:px-6 sm:py-6 text-base rounded-lg shadow-md w-full sm:w-auto"
+                    aria-label="Switch camera"
+                  >
+                    <SwitchCamera className="mr-2 h-5 w-5" /> Switch
+                  </Button>
+                )}
+              </>
             ) : (
               <>
                 <Button 
                   onClick={handleRetake} 
                   variant="outline"
-                  disabled={isLoading}
+                  disabled={isControlDisabled}
                   className="px-6 py-3 sm:px-8 sm:py-6 text-base sm:text-lg rounded-lg shadow-md w-full sm:w-auto flex-1"
                   aria-label="Retake image"
                 >
-                  {isLoading && <Loader2 className="mr-2 h-5 w-5 animate-spin" />}
+                  {(isLoading || isCapturingPhoto) && <Loader2 className="mr-2 h-5 w-5 animate-spin" />}
                   Retake
                 </Button>
                 <Button 
                   onClick={handleDownload} 
-                  disabled={isLoading}
+                  disabled={isControlDisabled}
                   className="bg-accent hover:bg-accent/90 text-accent-foreground px-6 py-3 sm:px-8 sm:py-6 text-base sm:text-lg rounded-lg shadow-md w-full sm:w-auto flex-1"
                   aria-label="Download image"
                 >
-                  {isLoading && <Loader2 className="mr-2 h-5 w-5 animate-spin" />}
+                  {(isLoading || isCapturingPhoto) && <Loader2 className="mr-2 h-5 w-5 animate-spin" />}
                   <Download className="mr-2 h-5 w-5" /> Download
                 </Button>
               </>
