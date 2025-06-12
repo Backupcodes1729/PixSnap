@@ -4,7 +4,7 @@
 export const dynamic = 'force-dynamic'; // Ensures page is not prerendered
 
 import Image from 'next/image';
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState, useRef, useCallback, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -23,7 +23,7 @@ interface PixsnapSettings {
   targetFileSizeKB: number;
 }
 
-export default function PreviewCapturePage() {
+function PreviewCapturePageContent() {
   const { toast } = useToast();
   const searchParams = useSearchParams();
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -132,9 +132,7 @@ export default function PreviewCapturePage() {
       
       if (videoRef.current) {
         videoRef.current.srcObject = newMediaStream;
-        // Set loading false once stream object is assigned and videoRef is available
-        // This allows UI elements like "Switch Camera" to appear sooner
-        setIsLoadingCamera(false); 
+        setIsLoadingCamera(false); // Moved up to enable Switch Camera button sooner
 
         videoRef.current.onloadedmetadata = () => {
            // console.log("Video metadata loaded");
@@ -142,7 +140,7 @@ export default function PreviewCapturePage() {
         videoRef.current.onerror = () => {
             console.error('Video element error');
             setWebcamError('Error with video stream playback.');
-            if (isLoadingCamera) setIsLoadingCamera(false); // Ensure loading is false on error
+            if (isLoadingCamera) setIsLoadingCamera(false); 
             setHasCameraPermission(false);
             if (activeStream) {
                 activeStream.getTracks().forEach(track => track.stop());
@@ -153,7 +151,7 @@ export default function PreviewCapturePage() {
             setStream(s => s === activeStream ? null : s);
         };
       } else {
-        setIsLoadingCamera(false); // Fallback if ref is not available
+        setIsLoadingCamera(false); 
       }
     } catch (err: any) {
       console.error("Error accessing webcam:", err);
@@ -185,7 +183,7 @@ export default function PreviewCapturePage() {
       }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isLoadingSettings, settings, initializeCamera]); // initializeCamera is stable due to useCallback
+  }, [isLoadingSettings, settings, initializeCamera]); 
 
   const getEstimatedByteSize = (dataUri: string): number => {
     if (!dataUri.includes(',')) return 0;
@@ -359,10 +357,11 @@ export default function PreviewCapturePage() {
   
   useEffect(() => {
     if (!isLoadingSettings && settings && !isPreviewing) {
-      initializeCamera();
+      // This effect will re-trigger initializeCamera if currentCameraIndex changes
+      // The main initializeCamera call is in the effect dependent on [isLoadingSettings, settings, initializeCamera]
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentCameraIndex]); // Re-initialize if camera index changes explicitly
+  }, [currentCameraIndex]);
 
 
   if (isLoadingSettings) {
@@ -454,14 +453,13 @@ export default function PreviewCapturePage() {
               width={settings.width}
               height={settings.height}
               className="object-contain rounded-none md:rounded-lg shadow-2xl"
-              style={{maxWidth: '100%', maxHeight: 'calc(100vh - 0px)'}} // Adjusted for potential control bar overlap
+              style={{maxWidth: '100%', maxHeight: 'calc(100vh - 0px)'}} 
               data-ai-hint="user capture preview"
               priority 
             />
         )}
       </div>
 
-      {/* Floating Controls Bar */}
       <div className="absolute bottom-6 md:bottom-10 inset-x-0 z-40 flex items-center justify-center px-4">
         <div className="relative flex items-center justify-center bg-black/50 backdrop-blur-md p-2 md:p-3 rounded-2xl shadow-xl space-x-2 md:space-x-3">
           {!isPreviewing && stream && hasCameraPermission === true && !webcamError && !isLoadingCamera && (
@@ -494,11 +492,9 @@ export default function PreviewCapturePage() {
                 )}
               </Button>
               
-              {/* Spacer for balance if switch camera button is present */}
               {availableCameras.length > 1 && ( 
                 <div className="w-12 h-12 md:w-14 md:h-14 flex-shrink-0"></div>
               )}
-               {/* Spacers for balance if switch camera button is NOT present (to keep capture button centered) */}
                {availableCameras.length <= 1 && ( 
                 <>
                  <div className="w-12 h-12 md:w-14 md:h-14 flex-shrink-0 opacity-0 pointer-events-none"></div>
@@ -522,5 +518,19 @@ export default function PreviewCapturePage() {
         </div>
       </div>
     </div>
+  );
+}
+
+
+export default function PreviewCapturePage() {
+  return (
+    <Suspense fallback={
+      <div className="flex flex-col items-center justify-center min-h-screen bg-black text-white p-4">
+        <Loader2 size={48} className="animate-spin mb-2"/>
+        <p>Loading Preview...</p>
+      </div>
+    }>
+      <PreviewCapturePageContent />
+    </Suspense>
   );
 }
