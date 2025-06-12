@@ -1,0 +1,107 @@
+name: Run Node App Every 5 Hours and Email Ngrok Link
+
+on:
+  schedule:
+    - cron: '0 */5 * * *'  # Every 5 hours
+  workflow_dispatch:        # Allows manual trigger
+
+jobs:
+  build-and-run:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+
+      - name: Create .env from Secret
+        run: echo "${{ secrets.ENV }}" > .env
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Build App
+        run: npm run build
+
+      - name: Start Server (background)
+        run: |
+          nohup npm start &
+          sleep 10
+
+      - name: Install Ngrok
+        run: |
+          wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-stable-linux-amd64.zip
+          unzip ngrok-stable-linux-amd64.zip
+          sudo mv ngrok /usr/local/bin
+
+      - name: Start Ngrok Tunnel
+        env:
+          NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
+        run: |
+          ngrok authtoken $NGROK_AUTH_TOKEN
+          nohup ngrok http 3000 > ngrok.log &
+          sleep 10
+
+      - name: Fetch Public URL
+        id: get-url
+        run: |
+          url=$(curl -s http://127.0.0.1:4040/api/tunnels | grep -o '"public_url":"[^"]*"' | cut -d'"' -f4 | head -n 1)
+          echo "NGROK_URL=$url" >> $GITHUB_ENV
+          echo "Ngrok Public URL: $url"
+
+      - name: Send Email with Public URL
+        run: |
+          pip install --quiet secure-smtplib email-validator
+          echo "
+          from email.mime.text import MIMEText
+          from email.mime.multipart import MIMEMultipart
+          import smtplib
+          import os
+          
+          user = os.environ['GMAIL_USER']
+          password = os.environ['GMAIL_PASS']
+          to_emails = os.environ['EMAIL_RECIPIENTS'].split(',')
+          public_url = os.environ['NGROK_URL']
+          
+          html = f\"\"\"
+          <html>
+            <body style='font-family: sans-serif;'>
+              <h2>🚀 Your Node.js App Is Live!</h2>
+              <p>You can access it at:</p>
+              <p><a href='{public_url}' style='font-size:18px; color:#007bff'>{public_url}</a></p>
+              <hr>
+              <p style='font-size:12px; color:gray'>This is an automated message from your GitHub Actions workflow.</p>
+            </body>
+          </html>
+          \"\"\"
+          
+          msg = MIMEMultipart('alternative')
+          msg['Subject'] = '🌐 Your Node.js App is Now Public!'
+          msg['From'] = user
+          msg['To'] = ', '.join(to_emails)
+          
+          msg.attach(MIMEText(html, 'html'))
+          
+          with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+              server.login(user, password)
+              server.sendmail(user, to_emails, msg.as_string())
+          " > send_email.py
+          python3 send_email.py
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_PASS: ${{ secrets.GMAIL_PASS }}
+          EMAIL_RECIPIENTS: ${{ secrets.EMAIL_RECIPIENTS }}
+          NGROK_URL: ${{ env.NGROK_URL }}
+
+      - name: Cooldown Timer (safe wait)
+        run: |
+          echo "Sleeping for 5 hours (18000s)..."
+          sleep 18000
+
+      - name: Cleanup .env
+        if: always()
+        run: rm -f .env
